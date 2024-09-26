@@ -1,0 +1,244 @@
+substitutions:
+  name: "smart-plug-01"
+  location: "客厅"  #放置位置
+
+esphome:
+  name: "${name}"
+  name_add_mac_suffix: true
+  friendly_name: "${location}智能插座"
+  #friendly_name: "智能插座"
+  comment: smart-plug-01
+  project:
+    name: carrot8848.Smart-Plug-01
+    version: "1.1.0"
+preferences:
+  flash_write_interval: 10min
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  on_client_connected:
+    - logger.log:
+        format: "Client %s connected to API with IP %s"
+        args: ["client_info.c_str()", "client_address.c_str()"]
+    - if:
+        condition:
+          binary_sensor.is_on: relay_status
+        then:
+          - logger.log: "Power is ON!"
+          - light.turn_on: stat_led
+          - delay: 2s
+        else:
+          - logger.log: "Power is OFF!"
+          - light.turn_off: stat_led
+ota:
+  - platform: esphome
+wifi:
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    password: ""
+  #use_address: 192.168.5.240
+captive_portal:
+globals:
+   - id: energy_
+     type: float
+     restore_value: yes
+   - id: energy_last  #energy from last power cycle
+     type: float
+     restore_value: yes
+dashboard_import:
+  package_import_url: github://carrot8848/ESPHome/Smart-Plug-01/config_v1.1.yaml@main
+  import_full_config: True
+web_server:
+  port: 80    
+external_components:
+  - source: github://dentra/esphome-components
+uart:
+  id: uart_bus
+  tx_pin: 6
+  rx_pin: 5
+  baud_rate: 4800
+  stop_bits: 1
+  rx_buffer_size: 512
+sensor:
+  - platform: bl0942
+    uart_id: uart_bus
+    voltage:
+      name: '${name} voltage'
+      accuracy_decimals: 2
+      id: voltage
+    current:
+      name: '${name} current'
+      accuracy_decimals: 2
+      id: current
+    power:
+      name: '${name} power'
+      id: power
+      accuracy_decimals: 2
+      filters:
+        multiply: -0.967
+    energy:
+      name: '${name} energy'
+      accuracy_decimals: 2
+      internal: True
+      id: energy
+      on_value: 
+        then:
+          - if:
+              condition:
+                sensor.in_range: 
+                  id: energy
+                  above: 0.01
+              then: 
+                globals.set: 
+                  id: energy_
+                  value: !lambda return id(energy_last) + x;
+              else:
+                - globals.set: 
+                    id: energy_last
+                    value: !lambda return id(energy_);
+    frequency:
+      name: "${name} frequency"
+      accuracy_decimals: 2
+      id: frequency
+    update_interval: 10s
+
+  - platform: template
+    name: "${name} Total Energy"
+    id: total_energy
+    unit_of_measurement: kWh
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 2
+    lambda: |-
+      return id(energy_);
+    update_interval: 10s
+  - platform: "energy_statistics"
+    total: total_energy
+    energy_today:
+      name: "${name} Energy Today"
+    energy_yesterday:
+      name: "${name} Energy Yesterday"
+    energy_week:
+      name: "${name} Energy Week"
+    energy_month:
+      name: "${name} Energy Month"
+
+  - platform: wifi_signal # Reports the WiFi signal strength/RSSI in dB
+    name: "${name} WiFi Signal dB"
+    id: wifi_signal_db
+    update_interval: 60s
+    entity_category: "diagnostic"
+
+  - platform: copy # Reports the WiFi signal strength in %
+    source_id: wifi_signal_db
+    name: "${name} WiFi Signal Percent"
+    filters:
+      - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
+    unit_of_measurement: "%"
+    entity_category: "diagnostic"
+
+time:
+  - platform: sntp
+    id: my_time
+
+switch:
+  # 电源继电器_开
+  - platform: gpio
+    name: "Power_Switch_on"
+    id: relay_on
+    pin: 0
+    interlock: relay_off #互锁
+    disabled_by_default: true #不显示UI
+    on_turn_on:
+    - delay: 500ms
+    - switch.turn_off: relay_on
+  # 电源继电器_关
+  - platform: gpio
+    name: "Power_Switch_off"    
+    id: relay_off
+    interlock: relay_on #互锁
+    pin: 1
+    disabled_by_default: true #不显示UI
+    on_turn_on:
+    - delay: 500ms
+    - switch.turn_off: relay_off
+  # 电源继电器_开关
+  - platform: template
+    name: "Power Switch"
+    id: relay
+    restore_mode: disabled
+    lambda: |-
+      if (id(relay_status).state) {
+        return true;
+      } else {
+        return false;
+      }
+    turn_on_action:
+      - switch.turn_on: relay_on
+    turn_off_action:
+      - switch.turn_on: relay_off
+
+  - platform: restart
+    name: "${name} controller Restart"
+  - platform: factory_reset
+    name: Restart with Factory Default Settings
+    disabled_by_default: true
+
+binary_sensor:
+  # 电源状态(继电器状态，检测继电器输出是否有电)
+  - platform: gpio
+    pin: 
+      number: 3
+      inverted: true
+      mode:
+        input: true
+        pullup: True
+    id: relay_status
+    name: "relay_status"
+    device_class: power
+    on_press:
+      then:
+        - light.turn_on: stat_led
+    on_release:
+      then:
+        - light.turn_off: stat_led
+  - platform: gpio
+    name: button1
+    pin: 
+      number: 4
+      inverted: true
+      mode:
+        input: true
+        pullup: True
+    on_click:
+      then:
+        - switch.toggle: relay 
+light:
+  - platform: status_led
+    name: "status_led"
+    id: stat_led
+    pin: 10
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: ${name} IP Address
+    ssid:
+      name: ${name} Connected SSID
+    bssid:
+      name: ${name} Connected BSSID
+    mac_address:
+      name: ${name} Mac Wifi Address
+    # scan_results:
+    #   name: ${name} Latest Scan Results
+    dns_address:
+      name: ${name} DNS Address
+  - platform: version
+    name: "ESPHome Version"
+    

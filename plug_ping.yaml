@@ -1,0 +1,322 @@
+substitutions:
+  name: "smart-plug-01"
+  location: "客厅"  #放置位置
+esphome:
+  name: smart-plug
+  friendly_name: smart-plug
+  project:
+    name: carrot8848.Smart-Plug-01
+    version: "1.1.0"
+preferences:
+  flash_write_interval: 24h    
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  reboot_timeout: 0s
+  encryption:
+    key: "P7ayWn8NJ3nVfdqdRjrYT/2dtfga3VQgR6KnN/dw/XM="
+
+ota:
+  - platform: esphome
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "plug esp32 c3 AP"
+    password: ""
+  #use_address: 192.168.5.240
+captive_portal:
+globals:
+   - id: energy_
+     type: float
+     restore_value: yes
+   - id: energy_last  #energy from last power cycle
+     type: float
+     restore_value: yes
+   - id: loss_cnt  #packet loss count
+     type: int
+     restore_value: no
+     initial_value: '0'
+# dashboard_import:
+#   package_import_url: github://carrot8848/ESPHome/Smart-Plug-01/config_v1.1.yaml@main
+#   import_full_config: True
+web_server:
+  port: 80    
+external_components:
+  - source: github://dentra/esphome-components
+  - source:
+      type: git
+      url: https://github.com/trombik/esphome-component-ping
+      ref: main
+uart:
+  id: uart_bus
+  tx_pin: 6
+  rx_pin: 5
+  baud_rate: 4800
+  stop_bits: 1
+  rx_buffer_size: 512
+sensor:
+  # - platform: bl0942
+  #   uart_id: uart_bus
+  #   voltage:
+  #     name: '${name} voltage'
+  #     accuracy_decimals: 2
+  #     id: voltage
+  #   current:
+  #     name: '${name} current'
+  #     accuracy_decimals: 2
+  #     id: current
+  #   power:
+  #     name: '${name} power'
+  #     id: power
+  #     accuracy_decimals: 2
+  #     filters:
+  #       multiply: -0.967
+  #   energy:
+  #     name: '${name} energy'
+  #     accuracy_decimals: 2
+  #     internal: True
+  #     id: energy
+  #     on_value: 
+  #       then:
+  #         - if:
+  #             condition:
+  #               sensor.in_range: 
+  #                 id: energy
+  #                 above: 0.01
+  #             then: 
+  #               globals.set: 
+  #                 id: energy_
+  #                 value: !lambda return id(energy_last) + x;
+  #             else:
+  #               - globals.set: 
+  #                   id: energy_last
+  #                   value: !lambda return id(energy_);
+  #   frequency:
+  #     name: "${name} frequency"
+  #     accuracy_decimals: 2
+  #     id: frequency
+  #   update_interval: 10s
+
+  # - platform: template
+  #   name: "${name} Total Energy"
+  #   id: total_energy
+  #   unit_of_measurement: kWh
+  #   device_class: energy
+  #   state_class: total_increasing
+  #   accuracy_decimals: 2
+  #   lambda: |-
+  #     return id(energy_);
+  #   update_interval: 10s
+  # - platform: "energy_statistics"
+  #   total: total_energy
+  #   energy_today:
+  #     name: "${name} Energy Today"
+  #   energy_yesterday:
+  #     name: "${name} Energy Yesterday"
+  #   energy_week:
+  #     name: "${name} Energy Week"
+  #   energy_month:
+  #     name: "${name} Energy Month"
+
+  # - platform: wifi_signal # Reports the WiFi signal strength/RSSI in dB
+  #   name: "${name} WiFi Signal dB"
+  #   id: wifi_signal_db
+  #   update_interval: 60s
+  #   entity_category: "diagnostic"
+
+  # - platform: copy # Reports the WiFi signal strength in %
+  #   source_id: wifi_signal_db
+  #   name: "${name} WiFi Signal Percent"
+  #   filters:
+  #     - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
+  #   unit_of_measurement: "%"
+  #   entity_category: "diagnostic"
+
+  - platform: ping       # ping components check the network connectivity
+    ip_address: 8.8.8.8          # 114.114.114.114
+    num_attempts: 60
+    timeout: 1sec
+    loss:
+      name: Packet loss
+      id: loss
+      on_value:
+        then:    
+          - lambda: |-
+              ESP_LOGW("custom","loss %0.1f cnt %d", id(loss).state, id(loss_cnt) );
+              if(id(loss).state > 99.9){
+                id(loss_cnt) += 1;
+                if(id(loss_cnt) >= 4){
+                  id(relay_off).turn_on();
+                  delay(1000); 
+                  id(relay_on).turn_on();
+                  id(loss_cnt) = 0;
+                }
+              }else{
+                id(loss_cnt) = 0;
+              }
+    latency:
+      name: Latency
+      accuracy_decimals: 3
+    update_interval: 80s
+time:
+  - platform: sntp
+    id: my_time
+
+switch:
+  # 电源继电器_开
+  - platform: gpio
+    name: "Power_Switch_on"
+    id: relay_on
+    pin: 0
+    interlock: relay_off #互锁
+    disabled_by_default: true #不显示UI
+    on_turn_on:
+    - delay: 500ms
+    - switch.turn_off: relay_on
+  # 电源继电器_关
+  - platform: gpio
+    name: "Power_Switch_off"    
+    id: relay_off
+    interlock: relay_on #互锁
+    pin: 1
+    disabled_by_default: true #不显示UI
+    on_turn_on:
+    - delay: 500ms
+    - switch.turn_off: relay_off
+  # 电源继电器_开关
+  - platform: template
+    name: "Power Switch"
+    id: relay
+    restore_mode: ALWAYS_ON 
+    lambda: |-
+      if (id(relay_status).state) {
+        return true;
+      } else {
+        return false;
+      }
+    turn_on_action:
+      - switch.turn_on: relay_on
+    turn_off_action:
+      - switch.turn_on: relay_off
+
+  - platform: restart
+    name: "${name} controller Restart"
+  - platform: factory_reset
+    name: Restart with Factory Default Settings
+    disabled_by_default: true
+
+binary_sensor:
+  # 电源状态(继电器状态，检测继电器输出是否有电)
+  - platform: gpio
+    pin: 
+      number: 3
+      inverted: true
+      mode:
+        input: true
+        pullup: True
+    id: relay_status
+    name: "relay_status"
+    device_class: power
+    on_press:
+      then:
+        - light.turn_on: stat_led
+    on_release:
+      then:
+        - light.turn_off: stat_led
+  - platform: gpio
+    name: button1
+    pin: 
+      number: 4
+      inverted: true
+      mode:
+        input: true
+        pullup: True
+    on_click:
+      then:
+        - switch.toggle: relay 
+light:
+  - platform: status_led
+    name: "status_led"
+    id: stat_led
+    pin: 10
+    restore_mode: ALWAYS_ON
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: ${name} IP Address
+    ssid:
+      name: ${name} Connected SSID
+    bssid:
+      name: ${name} Connected BSSID
+    mac_address:
+      name: ${name} Mac Wifi Address
+    # scan_results:
+    #   name: ${name} Latest Scan Results
+    dns_address:
+      name: ${name} DNS Address
+  - platform: version
+    name: "ESPHome Version"
+
+
+# external_components:
+#   - source:
+#       type: git
+#       url: https://github.com/trombik/esphome-component-ping
+#       ref: main
+# sensor:
+#   - platform: ping
+#     ip_address: 192.168.0.108
+#     num_attempts: 20
+#     timeout: 1sec
+#     loss:
+#       name: Packet loss
+#       id: loss
+#       on_value:
+#         then:
+#           - logger.log:
+#               format: "id(loss).state: %0.1f"
+#               args: [id(loss).state]
+#           - if:
+#               condition:
+#                 sensor.in_range: 
+#                   id: loss
+#                   above: 99.9
+#               then: 
+#                 - switch.turn_on: relay_off
+#                 - delay: 1500ms
+#                 - switch.turn_on: relay_on
+#     latency:
+#       name: Latency
+#       accuracy_decimals: 3
+#     update_interval: 30s
+
+
+# time:
+#   - platform: sntp
+#     id: my_time
+#     on_time:
+#       - seconds: "*" #cnt 300s 5min
+#         then:
+#           lambda: |-
+#             static int cnt = 0;
+#             cnt++;
+#             if( cnt >= 300 ){
+#               cnt = 0;
+#               ESP_LOGW("custom","loss %0.1f", id(loss).state);
+#               if(id(loss).state > 99.9){
+#                 id(relay_off).turn_on();
+#                 delay(1000); 
+#                 id(relay_on).turn_on();
+#               }
+#             }
+
